@@ -9,6 +9,7 @@ Railway env vars:
   WA_TOKEN         - WhatsApp Cloud API access token
   WA_PHONE_ID      - your WhatsApp phone number ID
   NOTIFY_WA_ID     - your own WhatsApp number, e.g. 6591234567, to get pinged per lead
+  FLOW_ID_RENOVATION, FLOW_ID_TUITION, FLOW_ID_HOME_SERVICES - flow IDs from WhatsApp Manager
 Start command: gunicorn app:app
 """
 import hashlib, hmac, json, logging, os
@@ -32,6 +33,75 @@ def send_text(to, text):
     )
     if not r.ok:
         logging.error("send failed %s %s", r.status_code, r.text)
+
+
+# Phrase in the landing page's pre-filled WhatsApp text -> (industry, env var holding the flow ID).
+# Must match the wa.me ?text= on each live page.
+FLOWS = {
+    "renovation agent": ("renovation", "FLOW_ID_RENOVATION"),
+    "tuition centre agent": ("tuition", "FLOW_ID_TUITION"),
+    "missed-call recovery": ("home_services", "FLOW_ID_HOME_SERVICES"),
+}
+
+FALLBACK = ("Thanks for reaching out! Which best describes you: a renovation firm, "
+            "a tuition centre, or a home-services company (aircon, plumbing, pest control, movers)?")
+
+# Also route people who answer the fallback question in their own words.
+KEYWORDS = {
+    "renovation": ("renovation", "interior", "reno", "id firm"),
+    "tuition": ("tuition", "enrichment", "centre", "center", "school"),
+    "home_services": ("aircon", "plumb", "pest", "mover", "moving", "home service"),
+}
+
+
+def send_flow(to, industry, flow_id):
+    r = requests.post(
+        f"{GRAPH}/{os.environ['WA_PHONE_ID']}/messages",
+        headers={"Authorization": f"Bearer {os.environ['WA_TOKEN']}"},
+        json={
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "interactive",
+            "interactive": {
+                "type": "flow",
+                "body": {"text": "Tell us about your business and we'll send your "
+                                 "personalised demo within 24 hours."},
+                "action": {
+                    "name": "flow",
+                    "parameters": {
+                        "flow_message_version": "3",
+                        "flow_id": flow_id,
+                        "flow_token": industry,
+                        "flow_cta": "Get my demo",
+                        "flow_action": "navigate",
+                        "flow_action_payload": {"screen": "SETUP"},
+                    },
+                },
+            },
+        },
+        timeout=10,
+    )
+    if not r.ok:
+        logging.error("flow send failed %s %s", r.status_code, r.text)
+
+
+def route_text(wa_id, text):
+    text = text.lower()
+    industry = None
+    for phrase, (ind, _) in FLOWS.items():
+        if phrase in text:
+            industry = ind
+            break
+    if industry is None:
+        for ind, words in KEYWORDS.items():
+            if any(w in text for w in words):
+                industry = ind
+                break
+    if industry is None:
+        send_text(wa_id, FALLBACK)
+        return
+    env = {ind: env for ind, env in FLOWS.values()}[industry]
+    send_flow(wa_id, industry, os.environ[env])
 
 
 def save_lead(wa_id, answers):
@@ -100,7 +170,8 @@ def handle(msg):
                       f"New lead ({answers.get('industry')}): {name}, wa {wa_id}, "
                       f"leak: {answers.get('biggest_leak')}. Demo due in 24h.")
         return
-    # TODO: your existing routing (prefilled text -> send matching flow, demo agent, etc.)
+    if msg.get("type") == "text":
+        route_text(msg["from"], msg["text"]["body"])
 
 
 @app.get("/")
