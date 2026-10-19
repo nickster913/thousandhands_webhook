@@ -1,0 +1,27 @@
+-- Run once against your Railway Postgres (Railway > Postgres > Data > Query, or psql).
+CREATE TABLE IF NOT EXISTS leads (
+    id              BIGSERIAL PRIMARY KEY,
+    wa_id           TEXT NOT NULL,                 -- their WhatsApp number
+    industry        TEXT,                          -- renovation / tuition / home_services
+    business_name   TEXT,
+    team_size       TEXT,
+    monthly_volume  TEXT,
+    biggest_leak    TEXT,
+    booking_system  TEXT,
+    consent         BOOLEAN,
+    raw             JSONB NOT NULL,                -- full flow payload, nothing lost
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    demo_sent_at    TIMESTAMPTZ,                   -- fill in when you send their demo
+    paid            BOOLEAN NOT NULL DEFAULT false,-- fill in when Stripe payment matches
+    notes           TEXT
+);
+CREATE INDEX IF NOT EXISTS leads_industry_idx ON leads (industry);
+CREATE INDEX IF NOT EXISTS leads_wa_id_idx ON leads (wa_id);
+
+-- Handy queries
+-- Funnel per industry:
+--   SELECT industry, count(*) AS forms,
+--          count(demo_sent_at) AS demos, count(*) FILTER (WHERE paid) AS paid
+--   FROM leads GROUP BY industry;
+-- Which pain wins per industry:
+--   SELECT industry, biggest_leak, count(*) FROM leads GROUP BY 1,2 ORDER BY 1,3 DESC;
